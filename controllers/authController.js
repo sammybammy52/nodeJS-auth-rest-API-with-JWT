@@ -19,7 +19,7 @@ const handleErrors = (err) => {
     //incorrect password
 
     if (err.message === 'incorrect password') {
-        errors.email = 'that password is not incorrect';
+        errors.email = 'oops, password is incorrect';
     }
 
 
@@ -42,11 +42,19 @@ const handleErrors = (err) => {
 
 //function for JWT
 
-const maxAge = 3 * 24 * 60 * 60;
+const maxAge = 60 * 60;
 
-const createToken  = (id) => {
+let refreshTokens = [];
+
+
+
+const createToken  = (id, firstName, email, role ) => {
     //second argument is string secret, dont share on repos
-    return jwt.sign({id}, process.env.SECRET_KEY, { expiresIn: maxAge });
+    return jwt.sign({id, firstName, email, role}, process.env.SECRET_KEY, { expiresIn: maxAge });
+}
+const createRefreshToken  = (id, firstName, email, role ) => {
+    //second argument is string secret, dont share on repos
+    return jwt.sign({id, firstName, email, role}, process.env.REFRESH_SECRET_KEY, { expiresIn: 7 * 24 * 60 * 60 });
 }
 
 
@@ -62,18 +70,22 @@ module.exports.login_get = (req, res) => {
 
 module.exports.signup_post = async (req, res) => {
     
-    const { email, password, role } = req.body;
+    const { firstName, lastName, email, password, role } = req.body;
     if (role === "Admin" || role === "Customer") {
         try {
-            const user = await User.create({ email, password, role });
+            const user = await User.create({ firstName, lastName, email, password, role });
     
-            const token = createToken(user._id);
+            const token = createToken(user._id, user.firstName, user.email, user.role);
+
+            const refreshToken = createRefreshToken(user._id, user.firstName, user.email, user.role);
+
+            refreshTokens.push(refreshToken);
 
             const user_id = user._id;
             const user_email = user.email;
             const user_role = user.role;
     
-            res.cookie('jwt', token, { httpOnly: true, maxAge: maxAge * 1000 });
+            //res.cookie('jwt', token, { httpOnly: true, maxAge: maxAge * 1000 });
     
             res.status(201).json({
                 user: {
@@ -81,7 +93,8 @@ module.exports.signup_post = async (req, res) => {
                     email: user_email,
                     role: user_role
                 },
-                token: token
+                token: token,
+                refreshToken:refreshToken
             });
         } catch (err) {
             const errors = handleErrors(err);
@@ -104,13 +117,18 @@ module.exports.login_post = async (req, res) => {
 
     try {
         const user = await User.login(email, password);
-        const token = createToken(user._id);
+        const token = createToken(user._id, user.firstName, user.email, user.role);
+
+        const refreshToken = createRefreshToken(user._id, user.firstName, user.email, user.role);
+
+        refreshTokens.push(refreshToken);
+
 
         const user_id = user._id;
         const user_email = user.email;
         const user_role = user.role;
     
-        res.cookie('jwt', token, { httpOnly: true, maxAge: maxAge * 1000 });
+       // res.cookie('jwt', token, { httpOnly: true, maxAge: maxAge * 1000 });
     
         res.status(201).json({
             user: {
@@ -118,7 +136,8 @@ module.exports.login_post = async (req, res) => {
                 email: user_email,
                 role: user_role
             },
-            token: token
+            token: token,
+            refreshToken: refreshToken,
         });
 
     } catch (err) {
@@ -127,6 +146,71 @@ module.exports.login_post = async (req, res) => {
     }
 
 }
+
+module.exports.refresh = (req, res) => {
+
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+        res.status(401).json({
+            errors: [
+                {
+                    msg: "Token not found",
+                },
+            ],
+        });
+    }
+
+    // If token does not exist, send error message
+    else if (!refreshTokens.includes(refreshToken)) {
+        res.status(403).json({
+            errors: [
+                {
+                    msg: "Invalid refresh token",
+                },
+            ],
+        });
+    } else {
+        // now we try to verify token
+        try {
+            jwt.verify(refreshToken, process.env.REFRESH_SECRET_KEY, async (err, decodedToken) => {
+                if (err) {
+                    res.status(400).json({
+                        error: "unverified"
+                    });
+                }
+                else {
+
+                    //let user = await User.findById(decodedToken.id);
+                    const token = createToken(decodedToken.id, decodedToken.firstName, decodedToken.email, decodedToken.role);
+
+                    const user_id = decodedToken.id;
+                    const user_email = decodedToken.email;
+                    const user_role = decodedToken.role;
+
+                    res.status(201).json({
+                        user: {
+                            id: user_id,
+                            email: user_email,
+                            role: user_role
+                        },
+                        token: token,
+                    });
+                }
+            });
+        } catch (error) {
+            res.status(403).json({
+                errors: [
+                    {
+                        msg: "Invalid token",
+                    },
+                ],
+            });
+        }
+    }
+}
+
+    
 
 module.exports.logout_get = (req,res) => {
     res.cookie('jwt', '', { maxAge: 1 });
